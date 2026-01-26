@@ -3,6 +3,7 @@ use anyhow::Context;
 mod cli;
 mod cargo;
 mod engine;
+mod explain;
 mod parse;
 mod report;
 
@@ -13,6 +14,10 @@ fn main() -> anyhow::Result<()> {
 
     if !exec.status.success() {
         report::print_errors(&exec.parsed);
+    }
+
+    if args.explain {
+        report::print_explain(&exec.parsed);
     }
 
     report::print_summary(&exec, exec.counts);

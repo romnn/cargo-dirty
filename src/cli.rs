@@ -19,6 +19,9 @@ pub struct Args {
     pub deep: bool,
 
     #[arg(long)]
+    pub explain: bool,
+
+    #[arg(long)]
     pub linear: bool,
 
     #[arg(long)]
@@ -107,5 +110,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["-Z".to_string(), "unstable-options".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_explain_flag() {
+        let args = Args::parse_from(["cargo-dirty", "--explain", "check"]);
+        assert!(args.explain);
+        assert_eq!(args.cargo_cmd().to_string_lossy(), "check");
     }
 }

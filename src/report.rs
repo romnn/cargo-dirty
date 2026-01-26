@@ -1,18 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
-
 use owo_colors::OwoColorize;
 
-use crate::cli::Args;
 use crate::cargo::CargoExecution;
 use crate::engine::Counts;
-use crate::parse::{CrateStatusEvent, CrateStatusKind, ParsedCargoOutput};
-
-#[derive(Debug)]
-pub struct TimelineEntry {
-    pub crate_id: String,
-    pub kind: CrateStatusKind,
-    pub reason: Option<String>,
-}
+use crate::explain;
+use crate::parse::ParsedCargoOutput;
 
 pub fn print_summary(exec: &CargoExecution, counts: Counts) {
     let secs = exec.duration.as_secs_f64();
@@ -50,127 +41,54 @@ pub fn print_errors(parsed: &ParsedCargoOutput) {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct Timeline {
-    pub entries: Vec<TimelineEntry>,
-    pub reasons: BTreeMap<String, String>,
-}
+pub fn print_explain(parsed: &ParsedCargoOutput) {
+    let analysis = explain::analyze(parsed);
+    let Some(culprit) = analysis.culprit else {
+        return;
+    };
 
-pub fn build_timeline(parsed: &ParsedCargoOutput, args: &Args) -> Timeline {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut entries: Vec<TimelineEntry> = Vec::new();
+    println!(
+        "{} {}",
+        "culprit".green().bold(),
+        culprit.bold()
+    );
 
-    for ev in &parsed.stderr_events {
-        match ev.kind {
-            CrateStatusKind::Compiling | CrateStatusKind::Checking | CrateStatusKind::Building => {
-                if seen.insert(ev.crate_id.clone()) {
-                    entries.push(TimelineEntry {
-                        crate_id: ev.crate_id.clone(),
-                        kind: ev.kind.clone(),
-                        reason: parsed.crate_reasons.get(&ev.crate_id).cloned(),
-                    });
-                }
-            }
-            CrateStatusKind::Fresh if args.show_fresh => {
-                if seen.insert(ev.crate_id.clone()) {
-                    entries.push(TimelineEntry {
-                        crate_id: ev.crate_id.clone(),
-                        kind: ev.kind.clone(),
-                        reason: None,
-                    });
-                }
-            }
-            _ => {}
-        }
+    if analysis.cascade.is_empty() {
+        return;
     }
 
-    Timeline {
-        entries,
-        reasons: parsed.crate_reasons.clone(),
-    }
-}
-
-pub fn print_report(tl: &Timeline, args: &Args) -> anyhow::Result<()> {
-    if tl.entries.is_empty() {
-        return Ok(());
-    }
-
-    let culprit = find_first_culprit(tl);
-
-    for (idx, entry) in tl.entries.iter().enumerate() {
+    for (idx, entry) in analysis.cascade.iter().enumerate() {
         let idx_raw = format!("{:>3}", idx + 1);
         let idx_s = idx_raw.dimmed();
 
-        let verb = match entry.kind {
-            CrateStatusKind::Compiling => "Compiling",
-            CrateStatusKind::Checking => "Checking",
-            CrateStatusKind::Building => "Building",
-            CrateStatusKind::Fresh => "Fresh",
-            _ => "Work",
-        };
+        println!(
+            "{idx_s} {} {}",
+            crate::cargo::verb(entry.kind.clone()).green().bold(),
+            entry.crate_id.bold()
+        );
 
-        let mut line = format!("{idx_s} {verb} {}", entry.crate_id.bold());
-
-        if Some(&entry.crate_id) == culprit.as_ref() {
-            line.push_str(&format!(" {}", "<culprit>".red().bold()));
+        if let Some(caused_by) = &entry.caused_by {
+            println!(
+                "     {} {}",
+                "caused by:".dimmed(),
+                caused_by.dimmed()
+            );
         }
-
-        println!("{line}");
 
         if let Some(reason) = &entry.reason {
-            println!("     {} {reason}", "reason:".dimmed());
-        } else if args.deep {
-            println!("     {} (no high-confidence reason found in v1)", "reason:".dimmed());
+            println!(
+                "     {} {}",
+                "reason:".dimmed(),
+                reason.dimmed()
+            );
         }
-    }
 
-    Ok(())
-}
-
-fn find_first_culprit(tl: &Timeline) -> Option<String> {
-    for entry in &tl.entries {
-        if let Some(reason) = entry.reason.as_deref() {
-            let lower = reason.to_ascii_lowercase();
-            if !lower.contains("dependency") && !lower.contains("dependencies") {
-                return Some(entry.crate_id.clone());
-            }
-        } else {
-            return Some(entry.crate_id.clone());
+        for detail in &entry.details {
+            println!(
+                "     {} {}",
+                "detail:".dimmed(),
+                detail.dimmed()
+            );
         }
-    }
-    tl.entries.first().map(|e| e.crate_id.clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cli::{Args, CargoSubcommand};
-
-    fn mk_event(kind: CrateStatusKind, crate_id: &str, reason: Option<&str>) -> CrateStatusEvent {
-        CrateStatusEvent {
-            kind,
-            crate_id: crate_id.to_string(),
-            reason: reason.map(|s| s.to_string()),
-        }
-    }
-
-    #[test]
-    fn timeline_keeps_first_work_order() {
-        let mut parsed = ParsedCargoOutput::default();
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "a v0.1.0", None));
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "b v0.1.0", None));
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "a v0.1.0", None));
-
-        let args = Args {
-            show_fresh: false,
-            deep: false,
-            linear: false,
-            cargo_path: None,
-            cargo: CargoSubcommand::Cargo(vec!["build".into()]),
-        };
-        let tl = build_timeline(&parsed, &args);
-        assert_eq!(tl.entries.len(), 2);
-        assert_eq!(tl.entries[0].crate_id, "a v0.1.0");
-        assert_eq!(tl.entries[1].crate_id, "b v0.1.0");
     }
 }

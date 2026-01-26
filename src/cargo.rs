@@ -28,7 +28,6 @@ enum StreamEvent {
         reason: Option<String>,
     },
     WorkReason {
-        crate_id: String,
         reason: String,
     },
 }
@@ -98,7 +97,7 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
                         );
                     }
                 }
-                StreamEvent::WorkReason { crate_id: _, reason } => {
+                StreamEvent::WorkReason { reason } => {
                     println!(
                         "     {} {}",
                         "reason:".dimmed(),
@@ -163,8 +162,8 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
                             reason,
                         });
                     }
-                    Event::WorkReason { crate_id, reason } => {
-                        let _ = tx_for_stderr.send(StreamEvent::WorkReason { crate_id, reason });
+                    Event::WorkReason { crate_id: _, reason } => {
+                        let _ = tx_for_stderr.send(StreamEvent::WorkReason { reason });
                     }
                 }
             }
@@ -176,14 +175,9 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     let parsed_for_stdout = Arc::clone(&parsed);
     let stdout_thread = thread::spawn(move || {
         let reader = BufReader::new(stdout);
-        for message in cargo_metadata::Message::parse_stream(reader) {
-            match message {
-                Ok(msg) => {
-                    let mut parsed_guard = parsed_for_stdout.lock().ok()?;
-                    parsed_guard.ingest_message(msg);
-                }
-                Err(_) => {}
-            }
+        for msg in cargo_metadata::Message::parse_stream(reader).flatten() {
+            let mut parsed_guard = parsed_for_stdout.lock().ok()?;
+            parsed_guard.ingest_message(msg);
         }
         Some(())
     });
@@ -210,7 +204,7 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     })
 }
 
-fn verb(kind: CrateStatusKind) -> &'static str {
+pub fn verb(kind: CrateStatusKind) -> &'static str {
     match kind {
         CrateStatusKind::Compiling => "Compiling",
         CrateStatusKind::Checking => "Checking",
@@ -228,6 +222,7 @@ mod tests {
         Args {
             show_fresh: false,
             deep: false,
+            explain: false,
             linear: false,
             cargo_path: None,
             cargo: CargoSubcommand::Cargo(
