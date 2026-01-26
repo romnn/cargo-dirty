@@ -7,22 +7,29 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use owo_colors::OwoColorize;
 
 use crate::cli::Args;
-use crate::parse::{parse_status_line, CrateStatusKind, ParsedCargoOutput};
+use crate::engine::{Counts, Engine, Event};
+use crate::parse::{CrateStatusKind, ParsedCargoOutput};
 
 pub struct CargoExecution {
     pub status: ExitStatus,
     pub parsed: ParsedCargoOutput,
     pub duration: Duration,
+    pub counts: Counts,
 }
 
 #[derive(Debug)]
 enum StreamEvent {
-    Work {
+    WorkStarted {
         kind: CrateStatusKind,
         crate_id: String,
         reason: Option<String>,
+    },
+    WorkReason {
+        crate_id: String,
+        reason: String,
     },
 }
 
@@ -69,19 +76,34 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     cmd.args(compose_cargo_args(args));
     cmd.env("CARGO_TERM_COLOR", "never");
 
-    let deep = args.deep;
-
     let (tx, rx) = mpsc::channel::<StreamEvent>();
     let printer = thread::spawn(move || {
         for ev in rx {
             match ev {
-                StreamEvent::Work { kind, crate_id, reason } => {
-                    println!("{} {crate_id}", verb(kind));
+                StreamEvent::WorkStarted {
+                    kind,
+                    crate_id,
+                    reason,
+                } => {
+                    println!(
+                        "{} {}",
+                        verb(kind).green().bold(),
+                        crate_id.bold()
+                    );
                     if let Some(reason) = reason {
-                        println!("     {} {reason}", "reason:");
-                    } else if deep {
-                        println!("     {} (no high-confidence reason found in v1)", "reason:");
+                        println!(
+                            "     {} {}",
+                            "reason:".dimmed(),
+                            reason.dimmed()
+                        );
                     }
+                }
+                StreamEvent::WorkReason { crate_id: _, reason } => {
+                    println!(
+                        "     {} {}",
+                        "reason:".dimmed(),
+                        reason.dimmed()
+                    );
                 }
             }
         }
@@ -104,12 +126,15 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     let parsed_for_stderr = Arc::clone(&parsed);
     let tx_for_stderr = tx.clone();
     let stderr_thread = thread::spawn(move || {
-        let mut streamed_work: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut engine = Engine::new();
         let mut stderr_reader = BufReader::new(stderr);
         let mut line = String::new();
         loop {
             line.clear();
-            let n = stderr_reader.read_line(&mut line).ok()?;
+            let n = match stderr_reader.read_line(&mut line) {
+                Ok(n) => n,
+                Err(_) => break,
+            };
             if n == 0 {
                 break;
             }
@@ -121,32 +146,31 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
                 }
             }
 
-            let line_trimmed = line.trim_start();
+            if let Ok(mut parsed_guard) = parsed_for_stderr.lock() {
+                parsed_guard.ingest_stderr_line(&line);
+            }
 
-            let status_event = parse_status_line(line_trimmed);
-
-            let mut parsed_guard = parsed_for_stderr.lock().ok()?;
-            parsed_guard.ingest_stderr_line(&line);
-
-            if let Some(ev) = status_event {
-                match ev.kind {
-                    CrateStatusKind::Compiling
-                    | CrateStatusKind::Checking
-                    | CrateStatusKind::Building => {
-                        if streamed_work.insert(ev.crate_id.clone()) {
-                            let reason = parsed_guard.crate_reasons.get(&ev.crate_id).cloned();
-                            let _ = tx_for_stderr.send(StreamEvent::Work {
-                                kind: ev.kind,
-                                crate_id: ev.crate_id,
-                                reason,
-                            });
-                        }
+            for ev in engine.ingest_stderr_line(&line) {
+                match ev {
+                    Event::WorkStarted {
+                        kind,
+                        crate_id,
+                        reason,
+                    } => {
+                        let _ = tx_for_stderr.send(StreamEvent::WorkStarted {
+                            kind,
+                            crate_id,
+                            reason,
+                        });
                     }
-                    _ => {}
+                    Event::WorkReason { crate_id, reason } => {
+                        let _ = tx_for_stderr.send(StreamEvent::WorkReason { crate_id, reason });
+                    }
                 }
             }
         }
-        Some(())
+
+        engine
     });
 
     let parsed_for_stdout = Arc::clone(&parsed);
@@ -167,7 +191,7 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     let status = child.wait().context("failed to wait for cargo")?;
     let duration = started_at.elapsed();
 
-    let _ = stderr_thread.join();
+    let counts = stderr_thread.join().unwrap_or_default().counts();
     let _ = stdout_thread.join();
 
     drop(tx);
@@ -182,6 +206,7 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
         status,
         parsed,
         duration,
+        counts,
     })
 }
 

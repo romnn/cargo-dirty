@@ -4,6 +4,7 @@ use owo_colors::OwoColorize;
 
 use crate::cli::Args;
 use crate::cargo::CargoExecution;
+use crate::engine::Counts;
 use crate::parse::{CrateStatusEvent, CrateStatusKind, ParsedCargoOutput};
 
 #[derive(Debug)]
@@ -13,57 +14,28 @@ pub struct TimelineEntry {
     pub reason: Option<String>,
 }
 
-pub fn compute_counts(parsed: &ParsedCargoOutput) -> SummaryCounts {
-    let mut fresh: HashSet<String> = HashSet::new();
-    let mut dirty: HashSet<String> = HashSet::new();
-    let mut work: HashSet<String> = HashSet::new();
-
-    for ev in &parsed.stderr_events {
-        if ev.crate_id.starts_with('<') {
-            continue;
-        }
-
-        match ev.kind {
-            CrateStatusKind::Fresh => {
-                fresh.insert(ev.crate_id.clone());
-            }
-            CrateStatusKind::Dirty => {
-                dirty.insert(ev.crate_id.clone());
-            }
-            CrateStatusKind::Compiling | CrateStatusKind::Checking | CrateStatusKind::Building => {
-                work.insert(ev.crate_id.clone());
-            }
-            _ => {}
-        }
-    }
-
-    SummaryCounts {
-        fresh: fresh.len(),
-        dirty: dirty.len(),
-        work: work.len(),
-    }
-}
-
-pub fn print_summary(exec: &CargoExecution, counts: SummaryCounts) {
+pub fn print_summary(exec: &CargoExecution, counts: Counts) {
     let secs = exec.duration.as_secs_f64();
+
+    let details = format!(
+        "in {:.2}s (fresh {}, dirty {}, work {})",
+        secs,
+        counts.fresh,
+        counts.dirty,
+        counts.work
+    );
 
     if exec.status.success() {
         println!(
-            "{} in {:.2}s (fresh {}, dirty {}, work {})",
+            "{} {}",
             "ok".green(),
-            secs,
-            counts.fresh,
-            counts.dirty,
-            counts.work
+            details.dimmed()
         );
     } else {
         println!(
-            "{} in {:.2}s (fresh {}, dirty {}, work {})",
+            "{} {}",
             "failed".red(),
-            secs,
-            counts.fresh,
-            counts.dirty,
-            counts.work
+            details.dimmed()
         );
     }
 }
@@ -82,13 +54,6 @@ pub fn print_errors(parsed: &ParsedCargoOutput) {
 pub struct Timeline {
     pub entries: Vec<TimelineEntry>,
     pub reasons: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SummaryCounts {
-    pub fresh: usize,
-    pub dirty: usize,
-    pub work: usize,
 }
 
 pub fn build_timeline(parsed: &ParsedCargoOutput, args: &Args) -> Timeline {

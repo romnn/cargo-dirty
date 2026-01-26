@@ -1,6 +1,11 @@
 # cargo-dirty
 
-A `cargo` subcommand that runs a user-provided Cargo command with extra verbosity, then summarizes *only the crates that actually did work* (i.e. were not cached/fresh), in the order Cargo executed them.
+A `cargo` subcommand that runs a user-provided Cargo command and prints a *minimal* summary of what was recompiled.
+
+By default it does **not** forward Cargo's own output (no `Fresh ...` spam, no build script warnings). Instead, it:
+
+- Streams *only* crates that actually did work (compile/check/build)
+- Prints a final summary line (time + counts)
 
 ## Install
 
@@ -15,30 +20,29 @@ cargo install --path .
 Run your normal cargo command via `cargo dirty`:
 
 ```bash
-cargo dirty build
+cargo dirty check --workspace --all-targets
+```
+
+Stream in a more deterministic order (adds `--jobs=1` to Cargo unless you already set jobs):
+
+```bash
+cargo dirty --linear check --workspace --all-targets
 ```
 
 Show fresh crates too:
 
 ```bash
-cargo dirty --show-fresh build
+cargo dirty --show-fresh check --workspace --all-targets
 ```
 
-Reduce interleaving for a more trustworthy "first culprit" ordering:
+Enable deep fingerprint tracing (best-effort; mainly useful for debugging):
 
 ```bash
-cargo dirty --linear build
-```
-
-Enable deep fingerprint tracing (best-effort; output is not a stable API):
-
-```bash
-cargo dirty --deep build
+cargo dirty --deep check --workspace --all-targets
 ```
 
 ## Notes
 
-- This is v1 (MVP) and is intentionally conservative.
-- The stable, structured signal source is Cargo JSON messages (`--message-format=json`).
-- The human-facing invalidation reasons are currently best-effort from `-vv` stderr lines (e.g. `Dirty ...: ...`).
-- In `--deep` mode, cargo fingerprint tracing is captured for future use; v1 does not yet fully attribute detailed reasons from these traces.
+- On success, output is intentionally terse.
+- On failure, only compiler **errors** are printed (from Cargo JSON messages).
+- Invalidation reasons are best-effort from Cargo `-vv` status lines (e.g. `Dirty ...: ...`).
