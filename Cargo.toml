@@ -1,0 +1,14 @@
+[package]
+name = "cargo-dirty"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+cargo_metadata = "0.23"
+clap = { version = "4.5", features = ["derive"] }
+owo-colors = "4"
+regex = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"
