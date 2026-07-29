@@ -22,13 +22,13 @@ pub fn print_summary(exec: &CargoExecution, counts: Counts) {
 
 pub fn print_errors(parsed: &ParsedCargoOutput) {
     for msg in &parsed.messages {
-        if let cargo_metadata::Message::CompilerMessage(cm) = msg {
-            if matches!(
+        if let cargo_metadata::Message::CompilerMessage(cm) = msg
+            && matches!(
                 cm.message.level,
                 cargo_metadata::diagnostic::DiagnosticLevel::Error
-            ) {
-                eprintln!("{}", cm.message.rendered.as_deref().unwrap_or(""));
-            }
+            )
+        {
+            eprintln!("{}", cm.message.rendered.as_deref().unwrap_or(""));
         }
     }
 }
@@ -51,7 +51,7 @@ pub fn print_explain(parsed: &ParsedCargoOutput) {
 
         println!(
             "{idx_s} {} {}",
-            crate::cargo::verb(entry.kind.clone()).green().bold(),
+            crate::cargo::verb(entry.kind).green().bold(),
             entry.crate_id.bold()
         );
 

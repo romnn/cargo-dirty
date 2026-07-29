@@ -1,3 +1,5 @@
+//! Reports which Cargo packages were recompiled and why.
+
 use anyhow::Context;
 
 mod cargo;

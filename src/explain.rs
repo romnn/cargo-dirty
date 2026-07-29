@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 
-use regex::Regex;
-
 use crate::parse::{CrateStatusEvent, CrateStatusKind, ParsedCargoOutput};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +37,7 @@ pub fn analyze(parsed: &ParsedCargoOutput) -> Analysis {
             .find(|(id, _)| id == &culprit_id)
             .map(|(id, kind)| CascadeEntry {
                 crate_id: id.clone(),
-                kind: kind.clone(),
+                kind: *kind,
                 reason: parsed.crate_reasons.get(id).cloned(),
                 caused_by: causes.get(id).cloned(),
                 details: fingerprint_details.get(id).cloned().unwrap_or_default(),
@@ -60,7 +58,7 @@ pub fn analyze(parsed: &ParsedCargoOutput) -> Analysis {
         if reaches_culprit(crate_id, &culprit_id, &causes, &mut memo) {
             cascade.push(CascadeEntry {
                 crate_id: crate_id.clone(),
-                kind: kind.clone(),
+                kind: *kind,
                 reason: parsed.crate_reasons.get(crate_id).cloned(),
                 caused_by: causes.get(crate_id).cloned(),
                 details: fingerprint_details
@@ -83,10 +81,10 @@ fn work_entries(events: &[CrateStatusEvent]) -> Vec<(String, CrateStatusKind)> {
 
     for ev in events {
         match ev.kind {
-            CrateStatusKind::Compiling | CrateStatusKind::Checking | CrateStatusKind::Building => {
-                if seen.insert(ev.crate_id.clone()) {
-                    work.push((ev.crate_id.clone(), ev.kind.clone()));
-                }
+            CrateStatusKind::Compiling | CrateStatusKind::Checking | CrateStatusKind::Building
+                if seen.insert(ev.crate_id.clone()) =>
+            {
+                work.push((ev.crate_id.clone(), ev.kind));
             }
             _ => {}
         }
@@ -229,39 +227,34 @@ fn reaches_culprit_inner(
 }
 
 fn extract_dependency_name(reason: &str) -> Option<&str> {
-    static DEP_ON_TICK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static DEP_TICK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    ["dependency on `", "dependency `"]
+        .into_iter()
+        .find_map(|marker| {
+            let (_, remainder) = reason.split_once(marker)?;
+            let (name, _) = remainder.split_once('`')?;
+            (!name.is_empty()).then_some(name)
+        })
+}
 
-    let dep_on_tick_re =
-        DEP_ON_TICK_RE.get_or_init(|| Regex::new(r"dependency on `(?P<name>[^`]+)`").unwrap());
-    let dep_tick_re =
-        DEP_TICK_RE.get_or_init(|| Regex::new(r"dependency `(?P<name>[^`]+)`").unwrap());
+fn fingerprint_crate_id(line: &str) -> Option<&str> {
+    let remainder = line.strip_prefix("fingerprint error for ")?;
+    let (crate_id, _) = remainder.split_once('/')?;
+    let mut parts = crate_id.split_whitespace();
+    parts.next()?;
+    let version = parts.next()?;
 
-    if let Some(caps) = dep_on_tick_re.captures(reason) {
-        return Some(caps.name("name")?.as_str());
-    }
-
-    if let Some(caps) = dep_tick_re.captures(reason) {
-        return Some(caps.name("name")?.as_str());
-    }
-
-    None
+    (version.starts_with('v') && parts.next().is_none()).then_some(crate_id)
 }
 
 fn parse_fingerprint_details(lines: &[String]) -> BTreeMap<String, Vec<String>> {
-    static FP_ERR_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-
-    let fp_err_re = FP_ERR_RE
-        .get_or_init(|| Regex::new(r"^fingerprint error for (?P<id>[^\s]+\s+v[^\s/]+)/").unwrap());
-
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut current: Option<String> = None;
 
     for raw in lines {
         let line = fingerprint_payload(raw);
 
-        if let Some(caps) = fp_err_re.captures(line) {
-            current = Some(caps["id"].to_string());
+        if let Some(crate_id) = fingerprint_crate_id(line) {
+            current = Some(crate_id.to_string());
             continue;
         }
 
@@ -288,7 +281,6 @@ fn parse_fingerprint_details(lines: &[String]) -> BTreeMap<String, Vec<String>> 
             if !msg.is_empty() {
                 out.entry(crate_id).or_default().push(msg.to_string());
             }
-            continue;
         }
     }
 

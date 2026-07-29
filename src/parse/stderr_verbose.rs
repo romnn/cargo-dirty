@@ -1,5 +1,11 @@
 use regex::Regex;
 
+type CachedRegex = std::sync::OnceLock<Result<Regex, regex::Error>>;
+
+fn cached_regex(cache: &'static CachedRegex, pattern: &str) -> Option<&'static Regex> {
+    cache.get_or_init(|| Regex::new(pattern)).as_ref().ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StderrLineDisposition {
     Suppress,
@@ -12,7 +18,7 @@ pub struct CrateStatusEvent {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrateStatusKind {
     Fresh,
     Dirty,
@@ -24,28 +30,34 @@ pub enum CrateStatusKind {
 }
 
 pub fn parse_line(line: &str) -> Option<CrateStatusEvent> {
-    static FRESH_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static DIRTY_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static COMPILING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static CHECKING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static BUILDING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    static RUNNING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static FRESH_RE: CachedRegex = std::sync::OnceLock::new();
+    static DIRTY_RE: CachedRegex = std::sync::OnceLock::new();
+    static COMPILING_RE: CachedRegex = std::sync::OnceLock::new();
+    static CHECKING_RE: CachedRegex = std::sync::OnceLock::new();
+    static BUILDING_RE: CachedRegex = std::sync::OnceLock::new();
+    static RUNNING_RE: CachedRegex = std::sync::OnceLock::new();
 
-    let fresh_re = FRESH_RE
-        .get_or_init(|| Regex::new(r"^Fresh\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap());
-    let dirty_re = DIRTY_RE.get_or_init(|| {
-        Regex::new(r"^Dirty\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?:\s+(?P<reason>.*)$").unwrap()
-    });
-    let compiling_re = COMPILING_RE.get_or_init(|| {
-        Regex::new(r"^Compiling\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap()
-    });
-    let checking_re = CHECKING_RE.get_or_init(|| {
-        Regex::new(r"^Checking\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap()
-    });
-    let building_re = BUILDING_RE.get_or_init(|| {
-        Regex::new(r"^Building\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap()
-    });
-    let running_re = RUNNING_RE.get_or_init(|| Regex::new(r"^Running\s+(?P<rest>.*)$").unwrap());
+    let fresh_re = cached_regex(
+        &FRESH_RE,
+        r"^Fresh\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$",
+    )?;
+    let dirty_re = cached_regex(
+        &DIRTY_RE,
+        r"^Dirty\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?:\s+(?P<reason>.*)$",
+    )?;
+    let compiling_re = cached_regex(
+        &COMPILING_RE,
+        r"^Compiling\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$",
+    )?;
+    let checking_re = cached_regex(
+        &CHECKING_RE,
+        r"^Checking\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$",
+    )?;
+    let building_re = cached_regex(
+        &BUILDING_RE,
+        r"^Building\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$",
+    )?;
+    let running_re = cached_regex(&RUNNING_RE, r"^Running\s+(?P<rest>.*)$")?;
 
     if let Some(caps) = fresh_re.captures(line) {
         return Some(CrateStatusEvent {

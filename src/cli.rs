@@ -41,21 +41,15 @@ impl Args {
         <Self as Parser>::parse_from(argv)
     }
 
-    pub fn cargo_cmd(&self) -> &OsString {
+    pub fn cargo_cmd(&self) -> Option<&OsString> {
         match &self.cargo {
-            CargoSubcommand::Cargo(v) => v.first().expect("cargo-dirty requires a cargo command"),
+            CargoSubcommand::Cargo(v) => v.first(),
         }
     }
 
     pub fn cargo_args(&self) -> &[OsString] {
         match &self.cargo {
-            CargoSubcommand::Cargo(v) => {
-                if v.len() <= 1 {
-                    &[]
-                } else {
-                    &v[1..]
-                }
-            }
+            CargoSubcommand::Cargo(v) => v.get(1..).unwrap_or_default(),
         }
     }
 
@@ -72,9 +66,10 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
 
     #[test]
-    fn parses_own_flags_before_cargo_cmd() {
+    fn parses_own_flags_before_cargo_cmd() -> anyhow::Result<()> {
         let args = Args::parse_from([
             "cargo-dirty",
             "--linear",
@@ -84,7 +79,12 @@ mod tests {
         ]);
 
         assert!(args.linear);
-        assert_eq!(args.cargo_cmd().to_string_lossy(), "check");
+        assert_eq!(
+            args.cargo_cmd()
+                .context("parsed arguments omitted the cargo command")?
+                .to_string_lossy(),
+            "check"
+        );
         assert_eq!(
             args.cargo_args()
                 .iter()
@@ -92,12 +92,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["--workspace".to_string(), "--all-targets".to_string()]
         );
+        Ok(())
     }
 
     #[test]
-    fn allows_hyphen_args_as_cargo_args() {
+    fn allows_hyphen_args_as_cargo_args() -> anyhow::Result<()> {
         let args = Args::parse_from(["cargo-dirty", "build", "-Z", "unstable-options"]);
-        assert_eq!(args.cargo_cmd().to_string_lossy(), "build");
+        assert_eq!(
+            args.cargo_cmd()
+                .context("parsed arguments omitted the cargo command")?
+                .to_string_lossy(),
+            "build"
+        );
         assert_eq!(
             args.cargo_args()
                 .iter()
@@ -105,12 +111,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["-Z".to_string(), "unstable-options".to_string()]
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_explain_flag() {
+    fn parses_explain_flag() -> anyhow::Result<()> {
         let args = Args::parse_from(["cargo-dirty", "--explain", "check"]);
         assert!(args.explain);
-        assert_eq!(args.cargo_cmd().to_string_lossy(), "check");
+        assert_eq!(
+            args.cargo_cmd()
+                .context("parsed arguments omitted the cargo command")?
+                .to_string_lossy(),
+            "check"
+        );
+        Ok(())
     }
 }
