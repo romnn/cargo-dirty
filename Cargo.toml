@@ -19,6 +19,7 @@ regex = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile = "3"
 
 [lints.rust]
 warnings = { level = "warn", priority = -1 }

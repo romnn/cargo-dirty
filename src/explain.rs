@@ -1,128 +1,111 @@
+//! Infers which change started a rebuild cascade.
+//!
+//! Cargo says *that* a crate was invalidated and, in prose, roughly why. This module reads those
+//! reasons as cause edges between crates, finds the one crate nothing else invalidated, and
+//! collects everything that traces back to it. It is inference over free text, so it is
+//! best-effort by nature and declines to guess when the text is ambiguous.
+
 use std::collections::{BTreeMap, HashMap};
 
-use crate::parse::{CrateStatusEvent, CrateStatusKind, ParsedCargoOutput};
+use crate::build_log::BuildLog;
+use crate::parse::{CrateId, CrateStatus, StatusKind, WorkKind, fingerprint};
 
+/// The rebuild story: one crate blamed for it, and every crate that followed from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Analysis {
-    pub culprit: Option<String>,
+    pub culprit: CrateId,
     pub cascade: Vec<CascadeEntry>,
 }
 
+/// One crate in the cascade, in the order cargo first reported work for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CascadeEntry {
-    pub crate_id: String,
-    pub kind: CrateStatusKind,
+    pub crate_id: CrateId,
+    pub kind: WorkKind,
+    /// Cargo's own explanation, absent when cargo reported work without a `Dirty` line.
     pub reason: Option<String>,
-    pub caused_by: Option<String>,
+    /// The crate this one was invalidated by; absent for the culprit and whenever the reason was
+    /// too ambiguous to attribute.
+    pub caused_by: Option<CrateId>,
+    /// Fingerprint-trace details, non-empty only under `--deep`.
     pub details: Vec<String>,
 }
 
-pub fn analyze(parsed: &ParsedCargoOutput) -> Analysis {
-    let work = work_entries(&parsed.stderr_events);
-    let name_to_id = crate_name_to_id(&work);
-
-    let causes = infer_causes_from_reasons(&work, &name_to_id, &parsed.crate_reasons);
-    let fingerprint_details = parse_fingerprint_details(&parsed.fingerprint_lines);
-
-    let Some((culprit_id, is_fallback)) = infer_culprit(&work, &causes) else {
-        return Analysis {
-            culprit: None,
-            cascade: Vec::new(),
-        };
-    };
-
-    if is_fallback {
-        let entry = work
-            .iter()
-            .find(|(id, _)| id == &culprit_id)
-            .map(|(id, kind)| CascadeEntry {
-                crate_id: id.clone(),
-                kind: *kind,
-                reason: parsed.crate_reasons.get(id).cloned(),
-                caused_by: causes.get(id).cloned(),
-                details: fingerprint_details.get(id).cloned().unwrap_or_default(),
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        return Analysis {
-            culprit: Some(culprit_id),
-            cascade: entry,
-        };
-    }
-
-    let mut memo: HashMap<String, bool> = HashMap::new();
-    let mut cascade: Vec<CascadeEntry> = Vec::new();
-
-    for (crate_id, kind) in &work {
-        if reaches_culprit(crate_id, &culprit_id, &causes, &mut memo) {
-            cascade.push(CascadeEntry {
-                crate_id: crate_id.clone(),
-                kind: *kind,
-                reason: parsed.crate_reasons.get(crate_id).cloned(),
-                caused_by: causes.get(crate_id).cloned(),
-                details: fingerprint_details
-                    .get(crate_id)
-                    .cloned()
-                    .unwrap_or_default(),
-            });
-        }
-    }
-
-    Analysis {
-        culprit: Some(culprit_id),
-        cascade,
-    }
+enum Culprit {
+    /// A crate no other crate is known to have invalidated: a genuine root of the rebuild.
+    Root(CrateId),
+    /// Every crate was blamed on another one, so cargo's reasons form a cycle and no root
+    /// exists. The first crate that did work is reported on its own instead.
+    Fallback(CrateId),
 }
 
-fn work_entries(events: &[CrateStatusEvent]) -> Vec<(String, CrateStatusKind)> {
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+/// Returns `None` when the build did no work at all, and so has nothing to explain.
+pub fn analyze(log: &BuildLog) -> Option<Analysis> {
+    let work = work_entries(log.statuses());
+    let causes = infer_causes_from_reasons(&work, log.reasons());
+    let details = fingerprint::parse_details(log.fingerprint_lines());
+
+    let entry = |crate_id: &CrateId, kind: WorkKind| CascadeEntry {
+        crate_id: crate_id.clone(),
+        kind,
+        reason: log.reasons().get(crate_id).cloned(),
+        caused_by: causes.get(crate_id).cloned(),
+        details: details.get(crate_id).cloned().unwrap_or_default(),
+    };
+
+    let (culprit, cascade) = match infer_culprit(&work, &causes)? {
+        Culprit::Root(culprit) => {
+            let cascade = work
+                .iter()
+                .filter(|(crate_id, _)| reaches_culprit(crate_id, &culprit, &causes))
+                .map(|(crate_id, kind)| entry(crate_id, *kind))
+                .collect();
+            (culprit, cascade)
+        }
+        Culprit::Fallback(culprit) => {
+            let cascade = work
+                .iter()
+                .find(|(crate_id, _)| *crate_id == culprit)
+                .map(|(crate_id, kind)| entry(crate_id, *kind))
+                .into_iter()
+                .collect();
+            (culprit, cascade)
+        }
+    };
+
+    Some(Analysis { culprit, cascade })
+}
+
+/// The crates that did work, in the order cargo first reported them.
+fn work_entries(statuses: &[CrateStatus]) -> Vec<(CrateId, WorkKind)> {
+    let mut seen: std::collections::HashSet<CrateId> = std::collections::HashSet::new();
     let mut work = Vec::new();
 
-    for ev in events {
-        match ev.kind {
-            CrateStatusKind::Compiling | CrateStatusKind::Checking | CrateStatusKind::Building
-                if seen.insert(ev.crate_id.clone()) =>
-            {
-                work.push((ev.crate_id.clone(), ev.kind));
-            }
-            _ => {}
+    for status in statuses {
+        if let StatusKind::Work(kind) = status.kind
+            && seen.insert(status.id.clone())
+        {
+            work.push((status.id.clone(), kind));
         }
     }
 
     work
 }
 
-fn crate_name_to_id(work: &[(String, CrateStatusKind)]) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for (crate_id, _) in work {
-        let Some(name) = crate_id.split_whitespace().next() else {
-            continue;
-        };
-        out.insert(name.to_string(), crate_id.clone());
-    }
-    out
-}
-
-fn fingerprint_payload(line: &str) -> &str {
-    let trimmed = line.trim();
-
-    if let Some((_, rest)) = trimmed.split_once("cargo::core::compiler::fingerprint]") {
-        return rest.trim();
-    }
-
-    if let Some((_, rest)) = trimmed.split_once("cargo::core::compiler::fingerprint:") {
-        return rest.trim();
-    }
-
-    trimmed
-}
-
+/// Reads cargo's invalidation reasons as cause edges: "dependency `x` was rebuilt" means this
+/// crate was invalidated by `x`. Every crate has at most one cause.
 fn infer_causes_from_reasons(
-    work: &[(String, CrateStatusKind)],
-    name_to_id: &HashMap<String, String>,
-    reasons: &BTreeMap<String, String>,
-) -> HashMap<String, String> {
+    work: &[(CrateId, WorkKind)],
+    reasons: &BTreeMap<CrateId, String>,
+) -> HashMap<CrateId, CrateId> {
+    let mut ids_by_name: HashMap<&str, Vec<&CrateId>> = HashMap::new();
+    for (crate_id, _) in work {
+        ids_by_name
+            .entry(crate_id.name())
+            .or_default()
+            .push(crate_id);
+    }
+
     let mut causes = HashMap::new();
 
     for (crate_id, _) in work {
@@ -134,12 +117,14 @@ fn infer_causes_from_reasons(
             continue;
         };
 
-        let Some(dep_id) = name_to_id.get(dep_name) else {
+        // Cargo names the dependency but not its version. With two versions of one crate in the
+        // same build, picking either would misattribute the cause, so decline to guess.
+        let Some([dep_id]) = ids_by_name.get(dep_name).map(Vec::as_slice) else {
             continue;
         };
 
-        if dep_id != crate_id {
-            causes.insert(crate_id.clone(), dep_id.clone());
+        if *dep_id != crate_id {
+            causes.insert(crate_id.clone(), (*dep_id).clone());
         }
     }
 
@@ -147,83 +132,37 @@ fn infer_causes_from_reasons(
 }
 
 fn infer_culprit(
-    work: &[(String, CrateStatusKind)],
-    causes: &HashMap<String, String>,
-) -> Option<(String, bool)> {
-    for (crate_id, _) in work {
-        if !causes.contains_key(crate_id) {
-            return Some((crate_id.clone(), false));
+    work: &[(CrateId, WorkKind)],
+    causes: &HashMap<CrateId, CrateId>,
+) -> Option<Culprit> {
+    if let Some((crate_id, _)) = work
+        .iter()
+        .find(|(crate_id, _)| !causes.contains_key(crate_id))
+    {
+        return Some(Culprit::Root(crate_id.clone()));
+    }
+
+    work.first().map(|(id, _)| Culprit::Fallback(id.clone()))
+}
+
+fn reaches_culprit(start: &CrateId, culprit: &CrateId, causes: &HashMap<CrateId, CrateId>) -> bool {
+    let mut current = start;
+
+    // Each crate has at most one cause, so reachability is a walk along a single chain. A chain
+    // longer than the cause map must have revisited a node, so stop there: a cycle that never
+    // met the culprit cannot reach it.
+    for _ in 0..=causes.len() {
+        if current == culprit {
+            return true;
+        }
+
+        match causes.get(current) {
+            Some(next) => current = next,
+            None => return false,
         }
     }
 
-    work.first().map(|(id, _)| (id.clone(), true))
-}
-
-fn reaches_culprit(
-    crate_id: &str,
-    culprit_id: &str,
-    causes: &HashMap<String, String>,
-    memo: &mut HashMap<String, bool>,
-) -> bool {
-    if crate_id == culprit_id {
-        return true;
-    }
-
-    if let Some(v) = memo.get(crate_id) {
-        return *v;
-    }
-
-    let Some(cause) = causes.get(crate_id) else {
-        memo.insert(crate_id.to_string(), false);
-        return false;
-    };
-
-    if cause == crate_id {
-        memo.insert(crate_id.to_string(), false);
-        return false;
-    }
-
-    if memo.contains_key(cause) {
-        let v = memo.get(cause).copied().unwrap_or(false);
-        memo.insert(crate_id.to_string(), v);
-        return v;
-    }
-
-    let mut stack_guard = std::collections::HashSet::new();
-    let v = reaches_culprit_inner(crate_id, culprit_id, causes, memo, &mut stack_guard);
-    memo.insert(crate_id.to_string(), v);
-    v
-}
-
-fn reaches_culprit_inner(
-    crate_id: &str,
-    culprit_id: &str,
-    causes: &HashMap<String, String>,
-    memo: &mut HashMap<String, bool>,
-    stack_guard: &mut std::collections::HashSet<String>,
-) -> bool {
-    if crate_id == culprit_id {
-        return true;
-    }
-
-    if let Some(v) = memo.get(crate_id) {
-        return *v;
-    }
-
-    if !stack_guard.insert(crate_id.to_string()) {
-        return false;
-    }
-
-    let Some(cause) = causes.get(crate_id) else {
-        stack_guard.remove(crate_id);
-        memo.insert(crate_id.to_string(), false);
-        return false;
-    };
-
-    let v = reaches_culprit_inner(cause, culprit_id, causes, memo, stack_guard);
-    stack_guard.remove(crate_id);
-    memo.insert(crate_id.to_string(), v);
-    v
+    false
 }
 
 fn extract_dependency_name(reason: &str) -> Option<&str> {
@@ -236,140 +175,108 @@ fn extract_dependency_name(reason: &str) -> Option<&str> {
         })
 }
 
-fn fingerprint_crate_id(line: &str) -> Option<&str> {
-    let remainder = line.strip_prefix("fingerprint error for ")?;
-    let (crate_id, _) = remainder.split_once('/')?;
-    let mut parts = crate_id.split_whitespace();
-    parts.next()?;
-    let version = parts.next()?;
-
-    (version.starts_with('v') && parts.next().is_none()).then_some(crate_id)
-}
-
-fn parse_fingerprint_details(lines: &[String]) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut current: Option<String> = None;
-
-    for raw in lines {
-        let line = fingerprint_payload(raw);
-
-        if let Some(crate_id) = fingerprint_crate_id(line) {
-            current = Some(crate_id.to_string());
-            continue;
-        }
-
-        let Some(crate_id) = current.clone() else {
-            continue;
-        };
-
-        if let Some(rest) = line.strip_prefix("err:") {
-            let msg = rest.trim();
-            if !msg.is_empty() {
-                out.entry(crate_id).or_default().push(msg.to_string());
-            }
-            continue;
-        }
-
-        if let Some(rest) = line.strip_prefix("Caused by:") {
-            let msg = format!("Caused by: {}", rest.trim());
-            out.entry(crate_id).or_default().push(msg);
-            continue;
-        }
-
-        if let Some(rest) = line.strip_prefix("Caused by") {
-            let msg = rest.trim();
-            if !msg.is_empty() {
-                out.entry(crate_id).or_default().push(msg.to_string());
-            }
-        }
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    fn mk_event(kind: CrateStatusKind, crate_id: &str) -> CrateStatusEvent {
-        CrateStatusEvent {
-            kind,
-            crate_id: crate_id.to_string(),
-            reason: None,
+    fn log_from(lines: &[&str]) -> BuildLog {
+        let mut log = BuildLog::new();
+        for line in lines {
+            let _ = log.ingest_line(line);
         }
+        log
     }
 
     #[test]
     fn picks_first_root_as_culprit_and_builds_cascade() {
-        let mut parsed = ParsedCargoOutput::default();
-        parsed
-            .stderr_events
-            .push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
-        parsed
-            .stderr_events
-            .push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
+        let log = log_from(&[
+            "Dirty a v0.1.0 (/tmp/a): the file `src/lib.rs` has changed",
+            "Compiling a v0.1.0 (/tmp/a)",
+            "Dirty b v0.1.0 (/tmp/b): dependency on `a` is newer than we are",
+            "Compiling b v0.1.0 (/tmp/b)",
+        ]);
 
-        parsed.crate_reasons.insert(
-            "a v0.1.0".to_string(),
-            "the file `src/lib.rs` has changed".to_string(),
-        );
-        parsed.crate_reasons.insert(
-            "b v0.1.0".to_string(),
-            "dependency on `a` is newer than we are".to_string(),
-        );
-
-        let a = analyze(&parsed);
-        assert_eq!(a.culprit, Some("a v0.1.0".to_string()));
+        let a = analyze(&log).unwrap();
+        assert_eq!(a.culprit, CrateId::new("a v0.1.0"));
         assert_eq!(a.cascade.len(), 2);
-        assert_eq!(a.cascade[0].crate_id, "a v0.1.0");
+        assert_eq!(a.cascade[0].crate_id, CrateId::new("a v0.1.0"));
         assert_eq!(a.cascade[0].caused_by, None);
-        assert_eq!(a.cascade[1].crate_id, "b v0.1.0");
-        assert_eq!(a.cascade[1].caused_by, Some("a v0.1.0".to_string()));
+        assert_eq!(a.cascade[1].crate_id, CrateId::new("b v0.1.0"));
+        assert_eq!(a.cascade[1].caused_by, Some(CrateId::new("a v0.1.0")));
     }
 
     #[test]
     fn falls_back_to_first_work_crate_if_no_roots_can_be_inferred() {
-        let mut parsed = ParsedCargoOutput::default();
-        parsed
-            .stderr_events
-            .push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
-        parsed
-            .stderr_events
-            .push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
+        let log = log_from(&[
+            "Dirty a v0.1.0 (/tmp/a): dependency on `b` is newer than we are",
+            "Compiling a v0.1.0 (/tmp/a)",
+            "Dirty b v0.1.0 (/tmp/b): dependency on `a` is newer than we are",
+            "Compiling b v0.1.0 (/tmp/b)",
+        ]);
 
-        parsed.crate_reasons.insert(
-            "a v0.1.0".to_string(),
-            "dependency on `b` is newer than we are".to_string(),
-        );
-        parsed.crate_reasons.insert(
-            "b v0.1.0".to_string(),
-            "dependency on `a` is newer than we are".to_string(),
-        );
-
-        let a = analyze(&parsed);
-        assert_eq!(a.culprit, Some("a v0.1.0".to_string()));
+        let a = analyze(&log).unwrap();
+        assert_eq!(a.culprit, CrateId::new("a v0.1.0"));
         assert_eq!(a.cascade.len(), 1);
-        assert_eq!(a.cascade[0].crate_id, "a v0.1.0");
+        assert_eq!(a.cascade[0].crate_id, CrateId::new("a v0.1.0"));
     }
 
     #[test]
-    fn parses_fingerprint_details_for_a_crate() {
-        let lines = vec![
-            "TRACE cargo::core::compiler::fingerprint: fingerprint error for a v0.1.0/Build/TargetInner { .. }".to_string(),
-            "TRACE cargo::core::compiler::fingerprint: err: unit dependency information changed".to_string(),
-            "TRACE cargo::core::compiler::fingerprint: Caused by: new (x) != old (y)".to_string(),
+    fn has_nothing_to_explain_when_no_crate_did_work() {
+        let log = log_from(&["Fresh a v0.1.0 (/tmp/a)"]);
+        assert!(analyze(&log).is_none());
+    }
+
+    #[test]
+    fn declines_to_infer_a_cause_when_the_dependency_name_is_ambiguous() {
+        let work = vec![
+            (CrateId::new("syn v1.0.0"), WorkKind::Compiling),
+            (CrateId::new("syn v2.0.0"), WorkKind::Compiling),
+            (CrateId::new("c v0.1.0"), WorkKind::Compiling),
         ];
 
-        let d = parse_fingerprint_details(&lines);
-        assert_eq!(d.get("a v0.1.0").unwrap().len(), 2);
-        assert_eq!(
-            d.get("a v0.1.0").unwrap()[0],
-            "unit dependency information changed".to_string()
+        let mut reasons = BTreeMap::new();
+        reasons.insert(
+            CrateId::new("c v0.1.0"),
+            "dependency on `syn` is newer than we are".to_string(),
         );
+
+        assert_eq!(infer_causes_from_reasons(&work, &reasons), HashMap::new());
+    }
+
+    #[test]
+    fn infers_a_cause_when_exactly_one_version_of_the_dependency_was_built() {
+        let work = vec![
+            (CrateId::new("syn v2.0.0"), WorkKind::Compiling),
+            (CrateId::new("c v0.1.0"), WorkKind::Compiling),
+        ];
+
+        let mut reasons = BTreeMap::new();
+        reasons.insert(
+            CrateId::new("c v0.1.0"),
+            "dependency on `syn` is newer than we are".to_string(),
+        );
+
+        let causes = infer_causes_from_reasons(&work, &reasons);
         assert_eq!(
-            d.get("a v0.1.0").unwrap()[1],
-            "Caused by: new (x) != old (y)".to_string()
+            causes.get(&CrateId::new("c v0.1.0")),
+            Some(&CrateId::new("syn v2.0.0"))
+        );
+    }
+
+    #[test]
+    fn a_cause_cycle_that_misses_the_culprit_terminates() {
+        let mut causes = HashMap::new();
+        causes.insert(CrateId::new("a v0.1.0"), CrateId::new("b v0.1.0"));
+        causes.insert(CrateId::new("b v0.1.0"), CrateId::new("a v0.1.0"));
+
+        assert_eq!(
+            reaches_culprit(
+                &CrateId::new("a v0.1.0"),
+                &CrateId::new("z v0.1.0"),
+                &causes
+            ),
+            false
         );
     }
 }
