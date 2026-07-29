@@ -1,4 +1,5 @@
 /target/
+/plan/
 .cooldown.lock
 goreleaser-dist/
 .intentionally-empty-file.o
