@@ -9,10 +9,25 @@ By default it does **not** forward Cargo's own output (no `Fresh ...` spam, no b
 
 ## Install
 
-From this repo:
+With Cargo:
 
 ```bash
-cargo install --path .
+cargo install --locked cargo-dirty
+```
+
+With Homebrew:
+
+```bash
+brew install --cask romnn/tap/cargo-dirty
+```
+
+Prebuilt archives are also available from
+[GitHub Releases](https://github.com/romnn/cargo-dirty/releases).
+
+From a local checkout:
+
+```bash
+cargo install --locked --path .
 ```
 
 ## Usage
