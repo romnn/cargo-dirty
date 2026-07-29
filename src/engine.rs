@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use crate::parse::{parse_status_line, CrateStatusKind};
+use crate::parse::{CrateStatusKind, parse_status_line};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
@@ -71,7 +71,9 @@ impl Engine {
                     if !already_had_reason {
                         self.reasons.insert(crate_id.clone(), reason.clone());
 
-                        if self.started.contains(&crate_id) && self.reason_emitted.insert(crate_id.clone()) {
+                        if self.started.contains(&crate_id)
+                            && self.reason_emitted.insert(crate_id.clone())
+                        {
                             out.push(Event::WorkReason { crate_id, reason });
                         }
                     }
@@ -115,7 +117,14 @@ mod tests {
         assert_eq!(e1.len(), 1);
         assert_eq!(e2.len(), 0);
 
-        assert_eq!(eng.counts(), Counts { fresh: 0, dirty: 0, work: 1 });
+        assert_eq!(
+            eng.counts(),
+            Counts {
+                fresh: 0,
+                dirty: 0,
+                work: 1
+            }
+        );
     }
 
     #[test]
@@ -129,9 +138,8 @@ mod tests {
     #[test]
     fn attaches_reason_if_known_before_work() {
         let mut eng = Engine::new();
-        let _ = eng.ingest_stderr_line(
-            "Dirty foo v0.1.0 (/tmp/foo): the file `src/lib.rs` has changed",
-        );
+        let _ = eng
+            .ingest_stderr_line("Dirty foo v0.1.0 (/tmp/foo): the file `src/lib.rs` has changed");
         let evs = eng.ingest_stderr_line("Compiling foo v0.1.0 (/tmp/foo)");
 
         assert_eq!(
@@ -150,9 +158,8 @@ mod tests {
         let evs1 = eng.ingest_stderr_line("Checking foo v0.1.0 (/tmp/foo)");
         assert_eq!(evs1.len(), 1);
 
-        let evs2 = eng.ingest_stderr_line(
-            "Dirty foo v0.1.0 (/tmp/foo): the file `build.rs` has changed",
-        );
+        let evs2 =
+            eng.ingest_stderr_line("Dirty foo v0.1.0 (/tmp/foo): the file `build.rs` has changed");
 
         assert_eq!(
             evs2,

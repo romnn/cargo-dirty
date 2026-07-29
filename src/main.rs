@@ -1,7 +1,7 @@
 use anyhow::Context;
 
-mod cli;
 mod cargo;
+mod cli;
 mod engine;
 mod explain;
 mod parse;

@@ -34,10 +34,7 @@ pub struct Args {
 impl Args {
     pub fn parse() -> Self {
         let mut argv: Vec<OsString> = std::env::args_os().collect();
-        if argv
-            .get(1)
-            .is_some_and(|a| a.to_string_lossy() == "dirty")
-        {
+        if argv.get(1).is_some_and(|a| a.to_string_lossy() == "dirty") {
             argv.remove(1);
         }
 
@@ -46,9 +43,7 @@ impl Args {
 
     pub fn cargo_cmd(&self) -> &OsString {
         match &self.cargo {
-            CargoSubcommand::Cargo(v) => v
-                .first()
-                .expect("cargo-dirty requires a cargo command"),
+            CargoSubcommand::Cargo(v) => v.first().expect("cargo-dirty requires a cargo command"),
         }
     }
 

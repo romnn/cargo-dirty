@@ -71,7 +71,11 @@ pub fn compose_cargo_args(args: &Args) -> Vec<OsString> {
 
 pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
     let started_at = Instant::now();
-    let mut cmd = Command::new(args.cargo_path.as_deref().unwrap_or_else(|| "cargo".as_ref()));
+    let mut cmd = Command::new(
+        args.cargo_path
+            .as_deref()
+            .unwrap_or_else(|| "cargo".as_ref()),
+    );
     cmd.args(compose_cargo_args(args));
     cmd.env("CARGO_TERM_COLOR", "never");
 
@@ -84,25 +88,13 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
                     crate_id,
                     reason,
                 } => {
-                    println!(
-                        "{} {}",
-                        verb(kind).green().bold(),
-                        crate_id.bold()
-                    );
+                    println!("{} {}", verb(kind).green().bold(), crate_id.bold());
                     if let Some(reason) = reason {
-                        println!(
-                            "     {} {}",
-                            "reason:".dimmed(),
-                            reason.dimmed()
-                        );
+                        println!("     {} {}", "reason:".dimmed(), reason.dimmed());
                     }
                 }
                 StreamEvent::WorkReason { reason } => {
-                    println!(
-                        "     {} {}",
-                        "reason:".dimmed(),
-                        reason.dimmed()
-                    );
+                    println!("     {} {}", "reason:".dimmed(), reason.dimmed());
                 }
             }
         }
@@ -117,8 +109,14 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
 
     let mut child = cmd.spawn().context("failed to spawn cargo")?;
 
-    let stdout = child.stdout.take().context("failed to capture cargo stdout")?;
-    let stderr = child.stderr.take().context("failed to capture cargo stderr")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture cargo stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture cargo stderr")?;
 
     let parsed = Arc::new(Mutex::new(ParsedCargoOutput::default()));
 
@@ -162,7 +160,10 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
                             reason,
                         });
                     }
-                    Event::WorkReason { crate_id: _, reason } => {
+                    Event::WorkReason {
+                        crate_id: _,
+                        reason,
+                    } => {
                         let _ = tx_for_stderr.send(StreamEvent::WorkReason { reason });
                     }
                 }
@@ -235,7 +236,9 @@ mod tests {
     }
 
     fn args_to_strings(v: Vec<OsString>) -> Vec<String> {
-        v.into_iter().map(|s| s.to_string_lossy().to_string()).collect()
+        v.into_iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect()
     }
 
     #[test]
@@ -261,10 +264,7 @@ mod tests {
 
     #[test]
     fn does_not_override_existing_message_format() {
-        let args = mk_args(
-            "build",
-            vec!["--message-format", "json-render-diagnostics"],
-        );
+        let args = mk_args("build", vec!["--message-format", "json-render-diagnostics"]);
         let out = args_to_strings(compose_cargo_args(&args));
         assert!(!out.contains(&"--message-format=json".to_string()));
     }

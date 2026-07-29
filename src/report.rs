@@ -10,31 +10,23 @@ pub fn print_summary(exec: &CargoExecution, counts: Counts) {
 
     let details = format!(
         "in {:.2}s (fresh {}, dirty {}, work {})",
-        secs,
-        counts.fresh,
-        counts.dirty,
-        counts.work
+        secs, counts.fresh, counts.dirty, counts.work
     );
 
     if exec.status.success() {
-        println!(
-            "{} {}",
-            "ok".green(),
-            details.dimmed()
-        );
+        println!("{} {}", "ok".green(), details.dimmed());
     } else {
-        println!(
-            "{} {}",
-            "failed".red(),
-            details.dimmed()
-        );
+        println!("{} {}", "failed".red(), details.dimmed());
     }
 }
 
 pub fn print_errors(parsed: &ParsedCargoOutput) {
     for msg in &parsed.messages {
         if let cargo_metadata::Message::CompilerMessage(cm) = msg {
-            if matches!(cm.message.level, cargo_metadata::diagnostic::DiagnosticLevel::Error) {
+            if matches!(
+                cm.message.level,
+                cargo_metadata::diagnostic::DiagnosticLevel::Error
+            ) {
                 eprintln!("{}", cm.message.rendered.as_deref().unwrap_or(""));
             }
         }
@@ -47,11 +39,7 @@ pub fn print_explain(parsed: &ParsedCargoOutput) {
         return;
     };
 
-    println!(
-        "{} {}",
-        "culprit".green().bold(),
-        culprit.bold()
-    );
+    println!("{} {}", "culprit".green().bold(), culprit.bold());
 
     if analysis.cascade.is_empty() {
         return;
@@ -68,27 +56,15 @@ pub fn print_explain(parsed: &ParsedCargoOutput) {
         );
 
         if let Some(caused_by) = &entry.caused_by {
-            println!(
-                "     {} {}",
-                "caused by:".dimmed(),
-                caused_by.dimmed()
-            );
+            println!("     {} {}", "caused by:".dimmed(), caused_by.dimmed());
         }
 
         if let Some(reason) = &entry.reason {
-            println!(
-                "     {} {}",
-                "reason:".dimmed(),
-                reason.dimmed()
-            );
+            println!("     {} {}", "reason:".dimmed(), reason.dimmed());
         }
 
         for detail in &entry.details {
-            println!(
-                "     {} {}",
-                "detail:".dimmed(),
-                detail.dimmed()
-            );
+            println!("     {} {}", "detail:".dimmed(), detail.dimmed());
         }
     }
 }

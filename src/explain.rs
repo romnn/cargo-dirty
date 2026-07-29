@@ -232,10 +232,10 @@ fn extract_dependency_name(reason: &str) -> Option<&str> {
     static DEP_ON_TICK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static DEP_TICK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
-    let dep_on_tick_re = DEP_ON_TICK_RE
-        .get_or_init(|| Regex::new(r"dependency on `(?P<name>[^`]+)`").unwrap());
-    let dep_tick_re = DEP_TICK_RE
-        .get_or_init(|| Regex::new(r"dependency `(?P<name>[^`]+)`").unwrap());
+    let dep_on_tick_re =
+        DEP_ON_TICK_RE.get_or_init(|| Regex::new(r"dependency on `(?P<name>[^`]+)`").unwrap());
+    let dep_tick_re =
+        DEP_TICK_RE.get_or_init(|| Regex::new(r"dependency `(?P<name>[^`]+)`").unwrap());
 
     if let Some(caps) = dep_on_tick_re.captures(reason) {
         return Some(caps.name("name")?.as_str());
@@ -311,12 +311,17 @@ mod tests {
     #[test]
     fn picks_first_root_as_culprit_and_builds_cascade() {
         let mut parsed = ParsedCargoOutput::default();
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
-
         parsed
-            .crate_reasons
-            .insert("a v0.1.0".to_string(), "the file `src/lib.rs` has changed".to_string());
+            .stderr_events
+            .push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
+        parsed
+            .stderr_events
+            .push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
+
+        parsed.crate_reasons.insert(
+            "a v0.1.0".to_string(),
+            "the file `src/lib.rs` has changed".to_string(),
+        );
         parsed.crate_reasons.insert(
             "b v0.1.0".to_string(),
             "dependency on `a` is newer than we are".to_string(),
@@ -334,8 +339,12 @@ mod tests {
     #[test]
     fn falls_back_to_first_work_crate_if_no_roots_can_be_inferred() {
         let mut parsed = ParsedCargoOutput::default();
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
-        parsed.stderr_events.push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
+        parsed
+            .stderr_events
+            .push(mk_event(CrateStatusKind::Compiling, "a v0.1.0"));
+        parsed
+            .stderr_events
+            .push(mk_event(CrateStatusKind::Compiling, "b v0.1.0"));
 
         parsed.crate_reasons.insert(
             "a v0.1.0".to_string(),

@@ -31,9 +31,8 @@ pub fn parse_line(line: &str) -> Option<CrateStatusEvent> {
     static BUILDING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static RUNNING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
-    let fresh_re = FRESH_RE.get_or_init(|| {
-        Regex::new(r"^Fresh\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap()
-    });
+    let fresh_re = FRESH_RE
+        .get_or_init(|| Regex::new(r"^Fresh\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap());
     let dirty_re = DIRTY_RE.get_or_init(|| {
         Regex::new(r"^Dirty\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?:\s+(?P<reason>.*)$").unwrap()
     });
@@ -46,9 +45,7 @@ pub fn parse_line(line: &str) -> Option<CrateStatusEvent> {
     let building_re = BUILDING_RE.get_or_init(|| {
         Regex::new(r"^Building\s+(?P<id>[^\s]+\s+v[^\s]+)(?:\s+\(.*\))?$").unwrap()
     });
-    let running_re = RUNNING_RE.get_or_init(|| {
-        Regex::new(r"^Running\s+(?P<rest>.*)$").unwrap()
-    });
+    let running_re = RUNNING_RE.get_or_init(|| Regex::new(r"^Running\s+(?P<rest>.*)$").unwrap());
 
     if let Some(caps) = fresh_re.captures(line) {
         return Some(CrateStatusEvent {
@@ -124,7 +121,8 @@ mod tests {
 
     #[test]
     fn parses_dirty() {
-        let ev = parse_line("Dirty bar v0.2.0 (/tmp/bar): the file `src/lib.rs` has changed").unwrap();
+        let ev =
+            parse_line("Dirty bar v0.2.0 (/tmp/bar): the file `src/lib.rs` has changed").unwrap();
         assert_eq!(ev.kind, CrateStatusKind::Dirty);
         assert_eq!(ev.crate_id, "bar v0.2.0");
         assert_eq!(

@@ -1,12 +1,12 @@
-mod stderr_verbose;
 mod fingerprint;
+mod stderr_verbose;
 
 use std::collections::BTreeMap;
 
 use cargo_metadata::Message;
 
-pub use stderr_verbose::{CrateStatusEvent, CrateStatusKind, StderrLineDisposition};
 pub use stderr_verbose::parse_line as parse_status_line;
+pub use stderr_verbose::{CrateStatusEvent, CrateStatusKind, StderrLineDisposition};
 
 #[derive(Default, Debug)]
 pub struct ParsedCargoOutput {
@@ -51,9 +51,8 @@ mod tests {
     #[test]
     fn suppresses_verbose_status_lines_and_extracts_reason() {
         let mut parsed = ParsedCargoOutput::default();
-        let disp = parsed.ingest_stderr_line(
-            "Dirty foo v0.1.0 (/tmp/foo): the file `src/lib.rs` has changed",
-        );
+        let disp = parsed
+            .ingest_stderr_line("Dirty foo v0.1.0 (/tmp/foo): the file `src/lib.rs` has changed");
 
         assert_eq!(disp, StderrLineDisposition::Suppress);
         assert_eq!(parsed.stderr_events.len(), 1);
