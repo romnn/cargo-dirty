@@ -72,11 +72,29 @@ fn add_bin_crate(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Writes a single crate that reads `CARGO_TERM_COLOR` at compile time, so rustc records the
+/// variable as an input and cargo rebuilds the crate whenever its value changes.
+fn fixture_color_reader(dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir.join("src"))?;
+
+    // The `[workspace]` table keeps cargo from walking up out of the system temp directory.
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"color-reader\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [workspace]\n",
+    )?;
+    std::fs::write(
+        dir.join("src").join("lib.rs"),
+        "pub fn color() -> Option<&'static str> {\n    option_env!(\"CARGO_TERM_COLOR\")\n}\n",
+    )?;
+
+    Ok(())
+}
+
 fn run_dirty(dir: &Path, args: &[&str]) -> anyhow::Result<Output> {
     Command::new(bin())
         .args(args)
         .current_dir(dir)
-        .env("CARGO_TERM_COLOR", "never")
         .output()
         .context("failed to run the cargo-dirty binary")
 }
@@ -141,6 +159,46 @@ fn second_check_is_all_fresh() -> anyhow::Result<()> {
     assert!(output.status.success(), "cargo-dirty failed: {stdout}");
     assert!(!stdout.contains("Checking"), "stdout was: {stdout}");
     assert!(stdout.contains("fresh 2"), "stdout was: {stdout}");
+
+    Ok(())
+}
+
+/// Wrapping a build that plain cargo left fresh must not change the inputs cargo fingerprints.
+///
+/// Cargo passes its environment on to rustc, which records every variable a crate reads at
+/// compile time, so a variable that cargo-dirty set for cargo would rebuild this fixture.
+#[test]
+fn wrapping_a_fresh_build_rebuilds_nothing() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    fixture_color_reader(dir.path())?;
+
+    // Both runs see the variable unset, so only a change made by cargo-dirty itself can make the
+    // second run differ.
+    // Plain `cargo` from `PATH` is also what cargo-dirty spawns, so both runs share a toolchain.
+    let plain = Command::new("cargo")
+        .arg("check")
+        .current_dir(dir.path())
+        .env_remove("CARGO_TERM_COLOR")
+        .output()
+        .context("failed to run cargo")?;
+    assert!(
+        plain.status.success(),
+        "cargo check failed: {}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+
+    let output = Command::new(bin())
+        .arg("check")
+        .current_dir(dir.path())
+        .env_remove("CARGO_TERM_COLOR")
+        .output()
+        .context("failed to run the cargo-dirty binary")?;
+    let stdout = stdout_of(&output);
+
+    // The plain build left no work behind, so cargo-dirty must find the crate fresh.
+    assert!(output.status.success(), "cargo-dirty failed: {stdout}");
+    assert!(!stdout.contains("Checking"), "stdout was: {stdout}");
+    assert!(stdout.contains("dirty 0"), "stdout was: {stdout}");
 
     Ok(())
 }

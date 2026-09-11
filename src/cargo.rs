@@ -128,8 +128,9 @@ fn has_quiet_flag(args: &[OsString]) -> bool {
 }
 
 /// Builds the child's argument list: the user's own arguments plus the flags this tool needs to
-/// see staleness (`-vv`), read diagnostics (`--message-format=json`), and — under `--linear` —
-/// keep the stream ordered (`--jobs=1`).
+/// see staleness (`-vv`), parse status lines free of ANSI codes (`--color=never`), read
+/// diagnostics (`--message-format=json`), and — under `--linear` — keep the stream ordered
+/// (`--jobs=1`).
 ///
 /// A flag is only injected when the user did not already set it, so their choice always wins.
 ///
@@ -151,6 +152,20 @@ pub fn compose_cargo_args(args: &Args) -> anyhow::Result<Vec<OsString>> {
         .any(|a| a == "--verbose" || a.to_string_lossy().starts_with("-v"));
     if !user_has_verbose {
         cargo_args.push(OsString::from("-vv"));
+    }
+
+    // Cargo's status lines are parsed as plain text, so they must not carry ANSI codes.
+    // The choice is a flag and not `CARGO_TERM_COLOR` because cargo passes its environment to
+    // rustc, which records every variable a crate reads through `env!` or `option_env!` as an
+    // input of that crate.
+    // Setting the variable would therefore rebuild such crates, and this tool would report
+    // rebuilds it caused itself.
+    let has_color = cargo_side.iter().any(|a| {
+        let s = a.to_string_lossy();
+        s == "--color" || s.starts_with("--color=")
+    });
+    if !has_color {
+        cargo_args.push(OsString::from("--color=never"));
     }
 
     cargo_args.push(subcommand.clone());
@@ -206,13 +221,15 @@ pub fn run_cargo(args: &Args) -> anyhow::Result<CargoExecution> {
             .unwrap_or_else(|| "cargo".as_ref()),
     );
     cmd.args(compose_cargo_args(args)?);
-    cmd.env("CARGO_TERM_COLOR", "never");
 
     let (tx, rx) = mpsc::channel::<DisplayEvent>();
     let show_fresh = args.show_fresh;
     let printer = thread::spawn(move || print_stream_events(rx, show_fresh));
 
     if args.deep {
+        // Cargo's logging has no command-line switch, so this has to be an environment variable.
+        // Rustc inherits it with the rest of cargo's environment, so under `--deep` a crate that
+        // reads `CARGO_LOG` at compile time is rebuilt.
         cmd.env("CARGO_LOG", "cargo::core::compiler::fingerprint=trace");
     }
 
@@ -337,6 +354,38 @@ mod tests {
     }
 
     #[test]
+    fn injects_color_never_before_the_subcommand() -> anyhow::Result<()> {
+        let args = mk_args("build", &[]);
+        let out = composed_args(&args)?;
+
+        let color = out
+            .iter()
+            .position(|a| a == "--color=never")
+            .context("composed args lost the injected color choice")?;
+        let subcommand = out
+            .iter()
+            .position(|a| a == "build")
+            .context("composed args lost the cargo subcommand")?;
+
+        assert!(color < subcommand);
+        Ok(())
+    }
+
+    #[test]
+    fn does_not_inject_color_when_user_specified_color() -> anyhow::Result<()> {
+        let user_colors: [&[&str]; 2] = [&["--color", "always"], &["--color=always"]];
+        for user_color in user_colors {
+            let args = mk_args("build", user_color);
+            let out = composed_args(&args)?;
+            assert!(
+                !out.contains(&"--color=never".to_string()),
+                "composed args were: {out:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn injected_flags_go_before_double_dash() -> anyhow::Result<()> {
         let args = mk_args("run", &["--", "--marker"]);
         let out = composed_args(&args)?;
@@ -379,6 +428,24 @@ mod tests {
             .context("composed args lost the injected job limit")?;
 
         assert!(jobs < separator);
+        Ok(())
+    }
+
+    #[test]
+    fn color_after_double_dash_does_not_suppress_color_never() -> anyhow::Result<()> {
+        let args = mk_args("run", &["--", "--color=always"]);
+        let out = composed_args(&args)?;
+
+        let separator = out
+            .iter()
+            .position(|a| a == "--")
+            .context("composed args lost the `--` separator")?;
+        let color = out
+            .iter()
+            .position(|a| a == "--color=never")
+            .context("composed args lost the injected color choice")?;
+
+        assert!(color < separator);
         Ok(())
     }
 
