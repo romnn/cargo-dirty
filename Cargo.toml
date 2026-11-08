@@ -55,5 +55,9 @@ targets = [
   "aarch64-apple-darwin",
 ]
 
+[package.metadata.cargo-fc.subcommands.lint]
+# A warning on any target fails the lint run, while builds and tests keep warnings as warnings.
+pedantic = true
+
 [package.metadata.cargo-fc.subcommands.udeps]
 maximal_features = true

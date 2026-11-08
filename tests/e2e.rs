@@ -91,10 +91,15 @@ fn fixture_color_reader(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Runs the binary in `dir`, which builds into its own target directory.
+///
+/// An inherited `CARGO_TARGET_DIR` would send every fixture into one shared target
+/// directory, where artifacts left by earlier fixtures can make a first build look warm.
 fn run_dirty(dir: &Path, args: &[&str]) -> anyhow::Result<Output> {
     Command::new(bin())
         .args(args)
         .current_dir(dir)
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .context("failed to run the cargo-dirty binary")
 }
@@ -179,6 +184,7 @@ fn wrapping_a_fresh_build_rebuilds_nothing() -> anyhow::Result<()> {
         .arg("check")
         .current_dir(dir.path())
         .env_remove("CARGO_TERM_COLOR")
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .context("failed to run cargo")?;
     assert!(
@@ -191,6 +197,7 @@ fn wrapping_a_fresh_build_rebuilds_nothing() -> anyhow::Result<()> {
         .arg("check")
         .current_dir(dir.path())
         .env_remove("CARGO_TERM_COLOR")
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .context("failed to run the cargo-dirty binary")?;
     let stdout = stdout_of(&output);
